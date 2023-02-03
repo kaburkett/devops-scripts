@@ -1,10 +1,3 @@
-<#PSScriptInfo
-.VERSION 1.1.0
-.AUTHOR Trey Troegel
-.PROJECTURI https://github.com/treytro/Samples
-.TAGS Azure Recovery Services Vault SQL Restore
-#>
-
 <#
 .SYNOPSIS
     Restores a SQL backup stored in Azure Recovery Services vault to the filesystem on that same machine.
@@ -25,6 +18,9 @@
 .PARAMETER SourceBackupServerFQDN
     String FQDN name of the server from which the SQL backup was taken, such as agtestnode1.jintech.com
  
+.PARAMETER SourceAzureMachineName
+    Case sensitive. What SourceBackupServerFQDN machine is named in Azure portal.
+ 
 .PARAMETER BkupToRestore
     The String name of the backup item to restore
  
@@ -35,7 +31,6 @@
         Get-AzRecoveryServicesBackupItem -BackupManagementType AzureWorkload -WorkloadType MSSQL -VaultId $vault.ID
  
 .PARAMETER RestoreDestinationFilePath
- 
     Declare what filepath you want to restore the backup to on the source SQL instance.
  
 .EXAMPLE
@@ -114,7 +109,7 @@ Write-Verbose –Message "Finding backup items from $($SourceBackupServerFQDN)"
 Write-Verbose –Message ""
 # There can be multiple database backups with the same name, but from different source servers registered in with vault. A common scenario would be the SQL system databases (master, msdb etc.).
 # Therefore, we need to filter Get-AzRecoveryServicesBackupItem by $SourceBackupServerFQDN in order to target the correct backup.
-$bkpItem = Get-AzRecoveryServicesBackupItem -BackupManagementType AzureWorkload -WorkloadType MSSQL -Name $BkupToRestore -VaultId $vault.ID | Where-Object ServerName -eq $SourceBackupServerFQDN
+$bkpItem = Get-AzRecoveryServicesBackupItem -BackupManagementType AzureWorkload -WorkloadType MSSQL -Name $BkupToRestore -VaultId $vault.ID | Where-Object ServerName -eq $SourceBackupServerFQDN  | Where-Object {$_.Name.EndsWith(";$BkupToRestore")}
 
 $startDate = (Get-Date).AddDays(-14).ToUniversalTime()
 $endDate = (Get-Date).ToUniversalTime()
@@ -124,22 +119,18 @@ $RecPointList = Get-AzRecoveryServicesBackupRecoveryPoint -Item $bkpItem -VaultI
 $RecPoint = $RecPointList | Where-Object RecoveryPointType -eq "Full" | Sort-Object -Descending -Property RecoveryPointTime | Select-Object -First 1
 
 <#
-To get a list of potential targets, use Get-AzRecoveryServicesBackupProtectableItem to list out SQL instances that are registered with the vault. If your target is not in the list, then the SQL instance needs to be registered with ARS Vault.
-You'll want to pull BOTH the -Name and -ServerName parameters from the output of Get-AzRecoveryServicesBackupProtectableItem
- 
-    $vault = Get-AzRecoveryServicesVault -ResourceGroupName "MyResGroup" -Name "MyVault"
-    Get-AzRecoveryServicesBackupProtectableItem -WorkloadType MSSQL -VaultId $vault.ID -ItemType SQLInstance
+This is the definition of the VM Container to which the 'restore as files' process will apply. 
 #>
-$NewDestinationInstance = Get-AzRecoveryServicesBackupProtectableItem -WorkloadType MSSQL -ItemType SQLInstance -Name $RestoreDestinationInst -ServerName $RestoreDestinationSrvFQDN -VaultId $vault.ID
+$TargetVM = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVMAppContainer -VaultId $Vault.Id | Where-Object {$_.Name.EndsWith(";$SourceMachineName") -and $_.HealthStatus -eq 'Healthy'}
 
 <#
-Use Set/Get-AzRecoveryServicesBackupWorkloadRecoveryConfig to adjust restore options such as Restored DB Name, alternate mdf/ldf restore paths, and whether to overwrite an existing database.
+Generates config file with all the needed markers to do a file recovery method to a VM.
 #>
-$InstanceWithFullConfig = Get-AzRecoveryServicesBackupWorkloadRecoveryConfig -RecoveryPoint $RecPoint -TargetItem $NewDestinationInstance -AlternateWorkloadRestore -VaultId $vault.ID
+$InstanceWithFullConfig = Get-AzRecoveryServicesBackupWorkloadRecoveryConfig -RecoveryPoint $RecPoint -TargetContainer $TargetVM -RestoreAsFiles -VaultId $vault.ID -FilePath $RestoreDestinationFilePath
 
 Write-Verbose –Message ""
 Write-Verbose –Message "------------------Restoring------------------"
-Write-Verbose –Message "Restoring $($BkupToRestore) to $($RestoreDestinationSrvFQDN)"
+Write-Verbose –Message "Restoring $($BkupToRestore) to $($RestoreDestinationFilePath)"
 Write-Verbose –Message ""
 # This is the command that actually performs the restore.
 Restore-AzRecoveryServicesBackupItem -WLRecoveryConfig $InstanceWithFullConfig -VaultId $vault.ID
