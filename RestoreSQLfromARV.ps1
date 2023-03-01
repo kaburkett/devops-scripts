@@ -58,41 +58,32 @@ param
     [String] $SourceBackupServerFQDN,
 
     [Parameter(Mandatory=$true)]
+    [String] $SourceAzureMachineName,
+
+    [Parameter(Mandatory=$true)]
     [String] $BkupToRestore,
 
     [Parameter(Mandatory=$true)]
-    [String] $RestoreDestinationSrvFQDN,
-
-    [Parameter(Mandatory=$true)]
-    [String] $RestoreDestinationInst
+    [String] $RestoreDestinationFilePath
 
 )
 
 # Ensures you do not inherit an AzContext in your runbook
-Disable-AzContextAutosave –Scope Process
+# Disable-AzContextAutosave –Scope Process
 
-Write-Verbose –Message ""
-Write-Verbose –Message "------------------------ Authentication ------------------------"
-Write-Verbose –Message "Logging into Azure ..."
+Write-Output -Verbose ""
+Write-Output -Verbose "------------------------ Authentication ------------------------"
+Write-Output -Verbose "Logging into Azure ..."
 
-$connection = Get-AutomationConnection -Name AzureRunAsConnection
 
-while(!($connectionResult) -And ($logonAttempt -le 2))
-{
-    $LogonAttempt++
-    # To connect to Azure Government use: Connect-AzAccount -Environment AzureUSGovernment
-    $connectionResult =    Connect-AzAccount `
-                               -ServicePrincipal `
-                               -Tenant $connection.TenantID `
-                               -ApplicationId $connection.ApplicationID `
-                               -CertificateThumbprint $connection.CertificateThumbprint
+# Connect to Azure with system-assigned managed identity
+$AzureContext = (Connect-AzAccount -Identity).context
 
-    Start-Sleep -Seconds 30
+# Set and store context
+$AzureContext = Set-AzContext -SubscriptionName $AzureContext.Subscription -DefaultProfile $AzureContext   
 
-}
-
-Write-Verbose –Message ""
-Write-Verbose –Message "Finding Azure Recovery Vault..."
+Write-Output -Verbose ""
+Write-Output -Verbose "Finding Azure Recovery Vault..."
 $vault = Get-AzRecoveryServicesVault -ResourceGroupName $ResGroup -Name $VaultName
 
 <#
@@ -103,10 +94,10 @@ Use Get-AzRecoveryServicesBackupItem in the manner to below to find the exact "-
  
 #>
 
-Write-Verbose –Message ""
-Write-Verbose –Message "------------------Finding a backup to be restored------------------"
-Write-Verbose –Message "Finding backup items from $($SourceBackupServerFQDN)"
-Write-Verbose –Message ""
+Write-Output -Verbose ""
+Write-Output -Verbose "------------------Finding a backup to be restored------------------"
+Write-Output -Verbose "Finding backup items from $($SourceBackupServerFQDN)"
+Write-Output -Verbose ""
 # There can be multiple database backups with the same name, but from different source servers registered in with vault. A common scenario would be the SQL system databases (master, msdb etc.).
 # Therefore, we need to filter Get-AzRecoveryServicesBackupItem by $SourceBackupServerFQDN in order to target the correct backup.
 $bkpItem = Get-AzRecoveryServicesBackupItem -BackupManagementType AzureWorkload -WorkloadType MSSQL -Name $BkupToRestore -VaultId $vault.ID | Where-Object ServerName -eq $SourceBackupServerFQDN  | Where-Object {$_.Name.EndsWith(";$BkupToRestore")}
@@ -121,16 +112,16 @@ $RecPoint = $RecPointList | Where-Object RecoveryPointType -eq "Full" | Sort-Obj
 <#
 This is the definition of the VM Container to which the 'restore as files' process will apply. 
 #>
-$TargetVM = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVMAppContainer -VaultId $Vault.Id | Where-Object {$_.Name.EndsWith(";$SourceMachineName") -and $_.HealthStatus -eq 'Healthy'}
+$TargetVM = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVMAppContainer -VaultId $Vault.Id | Where-Object {$_.Name.EndsWith(";$SourceAzureMachineName") -and $_.HealthStatus -eq 'Healthy'}
 
 <#
 Generates config file with all the needed markers to do a file recovery method to a VM.
 #>
 $InstanceWithFullConfig = Get-AzRecoveryServicesBackupWorkloadRecoveryConfig -RecoveryPoint $RecPoint -TargetContainer $TargetVM -RestoreAsFiles -VaultId $vault.ID -FilePath $RestoreDestinationFilePath
 
-Write-Verbose –Message ""
-Write-Verbose –Message "------------------Restoring------------------"
-Write-Verbose –Message "Restoring $($BkupToRestore) to $($RestoreDestinationFilePath)"
-Write-Verbose –Message ""
+Write-Output -Verbose ""
+Write-Output -Verbose "------------------Restoring------------------"
+Write-Output -Verbose "Restoring $($BkupToRestore) to $($RestoreDestinationFilePath)"
+Write-Output -Verbose ""
 # This is the command that actually performs the restore.
 Restore-AzRecoveryServicesBackupItem -WLRecoveryConfig $InstanceWithFullConfig -VaultId $vault.ID
